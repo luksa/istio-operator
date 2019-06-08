@@ -6,6 +6,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/maistra/istio-operator/pkg/apis/maistra/v1"
 	"github.com/maistra/istio-operator/pkg/controller/common"
@@ -34,7 +35,6 @@ type ControlPlaneReconciler struct {
 var seen = struct{}{}
 
 func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
-	allErrors := []error{}
 	var err error
 
 	// prepare to write a new reconciliation status
@@ -84,7 +84,7 @@ func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
 			err = r.Client.Update(context.TODO(), namespace)
 		}
 	} else {
-		allErrors = append(allErrors, err)
+		return r.handleError(err)
 	}
 
 	// initialize common data
@@ -111,10 +111,11 @@ func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
 		"istio/charts/kiali",
 	}
 	for _, componentName := range orderedComponents {
+		r.Log.Info("=====================================================================")
 		componentsProcessed[componentName] = seen
 		err = r.processComponentManifests(componentName)
 		if err != nil {
-			allErrors = append(allErrors, err)
+			return r.handleError(err)
 		}
 	}
 
@@ -123,14 +124,14 @@ func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
 		if !strings.HasPrefix(key, "istio/") {
 			continue
 		}
-		if _, ok := componentsProcessed[key]; ok {
+		if _, alreadyProcessed := componentsProcessed[key]; alreadyProcessed {
 			// already processed this component
 			continue
 		}
 		componentsProcessed[key] = seen
 		err = r.processComponentManifests(key)
 		if err != nil {
-			allErrors = append(allErrors, err)
+			return r.handleError(err)
 		}
 	}
 
@@ -138,17 +139,16 @@ func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
 	componentsProcessed["maistra-threescale"] = seen
 	err = r.processComponentManifests("maistra-threescale")
 	if err != nil {
-		allErrors = append(allErrors, err)
+		return r.handleError(err)
 	}
 
 	// delete unseen components
 	err = r.prune(r.Instance.GetGeneration())
 	if err != nil {
-		allErrors = append(allErrors, err)
+		return r.handleError(err)
 	}
 
 	r.Status.ObservedGeneration = r.Instance.GetGeneration()
-	err = utilerrors.NewAggregate(allErrors)
 	updateReconcileStatus(&r.Status.StatusType, err)
 
 	r.Instance.Status = *r.Status
@@ -164,6 +164,26 @@ func (r *ControlPlaneReconciler) Reconcile() (reconcile.Result, error) {
 	r.Log.Info("reconciliation complete")
 
 	return reconcile.Result{}, err
+}
+
+func (r *ControlPlaneReconciler) handleError(err error) (reconcile.Result, error) {
+	r.Status.ObservedGeneration = r.Instance.GetGeneration()
+	updateReconcileStatus(&r.Status.StatusType, err)
+
+	r.Instance.Status = *r.Status
+	updateErr := r.UpdateStatus()
+	if updateErr != nil {
+		r.Log.Error(updateErr, "error updating ServiceMeshControlPlane status")
+	}
+
+	if _, ok := err.(ComponentNotReadyError); ok {
+		return reconcile.Result{
+			Requeue:      true,
+			RequeueAfter: 5 * time.Second, // TODO: eventually change this so it doesn't requeue, but instead is triggered by the next watch event on the component in question
+		}, nil
+	} else {
+		return reconcile.Result{}, err
+	}
 }
 
 func (r *ControlPlaneReconciler) renderCharts() error {

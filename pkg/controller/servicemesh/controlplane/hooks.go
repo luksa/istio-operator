@@ -3,26 +3,27 @@ package controlplane
 import (
 	"context"
 	"fmt"
-	"time"
-
 	v1 "github.com/maistra/istio-operator/pkg/apis/maistra/v1"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/util/wait"
-
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (r *ControlPlaneReconciler) processNewComponent(name string, status *v1.ComponentStatus) error {
+func (r *ControlPlaneReconciler) postProcessNewComponent(name string, status *v1.ComponentStatus) error {
 	switch name {
 	case "istio/charts/galley":
-		r.waitForDeployments(status)
+		err := r.waitForDeployments(status)
+		if err != nil {
+			return err
+		}
 		if name == "istio/charts/galley" {
 			for _, status := range status.FindResourcesOfKind("ValidatingWebhookConfiguration") {
 				if installCondition := status.GetCondition(v1.ConditionTypeInstalled); installCondition.Status == v1.ConditionStatusTrue {
 					webhookKey := v1.ResourceKey(status.Resource)
-					r.waitForWebhookCABundleInitialization(webhookKey.ToUnstructured())
+					err := r.waitForWebhookCABundleInitialization(webhookKey.ToUnstructured())
+					if err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -30,12 +31,21 @@ func (r *ControlPlaneReconciler) processNewComponent(name string, status *v1.Com
 		for _, status := range status.FindResourcesOfKind("MutatingWebhookConfiguration") {
 			if installCondition := status.GetCondition(v1.ConditionTypeInstalled); installCondition.Status == v1.ConditionStatusTrue {
 				webhookKey := v1.ResourceKey(status.Resource)
-				r.waitForWebhookCABundleInitialization(webhookKey.ToUnstructured())
+				err := r.waitForWebhookCABundleInitialization(webhookKey.ToUnstructured())
+				if err != nil {
+					return err
+				}
 			}
 		}
-		r.waitForDeployments(status)
+		err := r.waitForDeployments(status)
+		if err != nil {
+			return err
+		}
 	default:
-		r.waitForDeployments(status)
+		err := r.waitForDeployments(status)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -177,74 +187,88 @@ func (r *ControlPlaneReconciler) waitForDeployments(status *v1.ComponentStatus) 
 	for _, status := range status.FindResourcesOfKind("StatefulSet") {
 		if installCondition := status.GetCondition(v1.ConditionTypeInstalled); installCondition.Status == v1.ConditionStatusTrue {
 			deploymentKey := v1.ResourceKey(status.Resource)
-			r.waitForDeployment(deploymentKey.ToUnstructured())
+			err := r.waitForDeployment(deploymentKey.ToUnstructured())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	for _, status := range status.FindResourcesOfKind("Deployment") {
 		if installCondition := status.GetCondition(v1.ConditionTypeInstalled); installCondition.Status == v1.ConditionStatusTrue {
 			deploymentKey := v1.ResourceKey(status.Resource)
-			r.waitForDeployment(deploymentKey.ToUnstructured())
+			err := r.waitForDeployment(deploymentKey.ToUnstructured())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	for _, status := range status.FindResourcesOfKind("DeploymentConfig") {
 		if installCondition := status.GetCondition(v1.ConditionTypeInstalled); installCondition.Status == v1.ConditionStatusTrue {
 			deploymentKey := v1.ResourceKey(status.Resource)
-			r.waitForDeployment(deploymentKey.ToUnstructured())
+			err := r.waitForDeployment(deploymentKey.ToUnstructured())
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-// XXX: configure wait period
+type ComponentNotReadyError struct {
+	msg string
+}
+
+func (e ComponentNotReadyError) Error() string {
+	return e.msg
+}
+
 func (r *ControlPlaneReconciler) waitForDeployment(object *unstructured.Unstructured) error {
 	name := object.GetName()
+	kind := object.GetKind()
+
 	// wait for deployment replicas >= 1
-	r.Log.Info("waiting for deployment to become ready", object.GetKind(), name)
-	err := wait.ExponentialBackoff(wait.Backoff{Duration: 6 * time.Second, Steps: 10, Factor: 1.1}, func() (bool, error) {
-		err := r.Client.Get(context.TODO(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, object)
-		if err == nil {
-			val, _, _ := unstructured.NestedInt64(object.UnstructuredContent(), "status", "readyReplicas")
-			return val > 0, nil
-		} else if errors.IsNotFound(err) {
-			r.Log.Error(nil, "attempting to wait on unknown deployment", object.GetKind(), name)
-			return true, nil
-		}
-		r.Log.Error(err, "unexpected error occurred waiting for deployment to become ready", object.GetKind(), name)
-		return false, err
-	})
+	r.Log.Info("checking if deployment is ready", kind, name)
+
+	err := r.Client.Get(context.TODO(), client.ObjectKey{Namespace: object.GetNamespace(), Name: name}, object)
 	if err != nil {
-		r.Log.Error(nil, "deployment failed to become ready in a timely manner", object.GetKind(), name)
+		r.Log.Error(err, "unexpected error occurred when checking if deployment is ready", kind, name)
+		return fmt.Errorf("error getting %s %s: %v", kind, name, err)
+	} else if errors.IsNotFound(err) {
+		r.Log.Error(nil, "attempting to wait on unknown deployment", kind, name)
+		return fmt.Errorf("%s %s not found", kind, name)
 	}
-	return nil
+
+	readyReplicas, _, _ := unstructured.NestedInt64(object.UnstructuredContent(), "status", "readyReplicas")
+	if readyReplicas > 0 {
+		return nil
+	} else {
+		return ComponentNotReadyError{"no replica is ready"}
+	}
 }
 
 func (r *ControlPlaneReconciler) waitForWebhookCABundleInitialization(object *unstructured.Unstructured) error {
 	name := object.GetName()
 	kind := object.GetKind()
 	r.Log.Info("waiting for webhook CABundle initialization", kind, name)
-	err := wait.ExponentialBackoff(wait.Backoff{Duration: 6 * time.Second, Steps: 10, Factor: 1.1}, func() (bool, error) {
-		err := r.Client.Get(context.TODO(), client.ObjectKey{Name: name}, object)
-		if err == nil {
-			webhooks, found, _ := unstructured.NestedSlice(object.UnstructuredContent(), "webhooks")
-			if !found || len(webhooks) == 0 {
-				return true, nil
-			}
-			for _, webhook := range webhooks {
-				typedWebhook, _ := webhook.(map[string]interface{})
-				if caBundle, found, _ := unstructured.NestedString(typedWebhook, "clientConfig", "caBundle"); !found || len(caBundle) == 0 {
-					return false, nil
-				}
-			}
-			return true, nil
-		} else if errors.IsNotFound(err) {
-			r.Log.Error(nil, "attempting to wait on unknown webhook", kind, name)
-			return true, nil
-		}
-		r.Log.Error(err, "unexpected error occurred waiting for webhook CABundle to become initialized", object.GetKind(), name)
-		return false, err
-	})
+
+	err := r.Client.Get(context.TODO(), client.ObjectKey{Name: name}, object)
 	if err != nil {
-		r.Log.Error(nil, "webhook CABundle failed to become initialized in a timely manner", kind, name)
+		r.Log.Error(err, "unexpected error occurred waiting for webhook CABundle to become initialized", kind, name)
+		return fmt.Errorf("error getting %s %s: %v", kind, name, err)
+	} else if errors.IsNotFound(err) {
+		r.Log.Error(nil, "attempting to wait on unknown webhook", kind, name)
+		return fmt.Errorf("%s %s not found", kind, name)
+	}
+
+	webhooks, found, _ := unstructured.NestedSlice(object.UnstructuredContent(), "webhooks")
+	if !found || len(webhooks) == 0 {
+		return nil
+	}
+	for _, webhook := range webhooks {
+		typedWebhook, _ := webhook.(map[string]interface{})
+		if caBundle, found, _ := unstructured.NestedString(typedWebhook, "clientConfig", "caBundle"); !found || len(caBundle) == 0 {
+			return ComponentNotReadyError{fmt.Sprintf("caBundle in %s %s not set", kind, name)}
+		}
 	}
 	return nil
 }
