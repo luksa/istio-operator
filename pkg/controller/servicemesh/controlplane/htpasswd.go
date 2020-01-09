@@ -21,7 +21,7 @@ func (r *ControlPlaneReconciler) patchHtpasswdSecret(secret *corev1.Secret) erro
 		rawPassword = string(htSecret.Data["rawPassword"])
 		auth = string(htSecret.Data["auth"])
 	} else {
-		r.Log.Info("Creating HTPasswd entry", secret.GetObjectKind(), secret.GetName())
+		r.Log.Info("Creating HTPasswd entry", "secret", secret.GetName())
 
 		rawPassword, err = generatePassword(255)
 		if err != nil {
