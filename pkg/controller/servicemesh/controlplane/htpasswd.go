@@ -33,12 +33,9 @@ func (r *ControlPlaneReconciler) patchHtpasswdSecret(secret *corev1.Secret) erro
 		auth = "internal:{SHA}" + base64.StdEncoding.EncodeToString(h.Sum(nil))
 	}
 
-	b64Password := base64.StdEncoding.EncodeToString([]byte(rawPassword))
-	b64Auth := base64.StdEncoding.EncodeToString([]byte(auth))
-
 	// We store the raw password in order to be able to retrieve it below, when patching Grafana ConfigMap
-	secret.Data["rawPassword"] = []byte(b64Password)
-	secret.Data["auth"] = []byte(b64Auth)
+	secret.Data["rawPassword"] = []byte(rawPassword)
+	secret.Data["auth"] = []byte(auth)
 
 	return nil
 }
