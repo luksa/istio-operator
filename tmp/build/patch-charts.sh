@@ -37,7 +37,8 @@ function patchTemplates() {
   # Webhooks are not namespaced!  we do this to ensure we're not setting owner references on them
   sed -i -e '/metadata:/,/webhooks:/ { /namespace/d }' \
     ${HELM_DIR}/istio/charts/sidecarInjectorWebhook/templates/mutatingwebhookconfiguration.yaml.tpl \
-    ${HELM_DIR}/istio/charts/galley/templates/validatingwebhookconfiguration.yaml.tpl
+    ${HELM_DIR}/istio/charts/galley/templates/validatingwebhookconfiguration.yaml.tpl \
+    ${HELM_DIR}/istio/charts/galley/templates/validatingwebhookconfiguration.yaml
 
 
   # enable egressgateway
