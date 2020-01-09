@@ -486,7 +486,7 @@ type namespaceReconciler struct {
 func newNamespaceReconciler(rm common.ResourceManager, meshNamespace string, isCNIEnabled bool) (*namespaceReconciler, error) {
 	var err error
 	reconciler := &namespaceReconciler{
-		ResourceManager: rm,
+		ResourceManager:      rm,
 		meshNamespace:        meshNamespace,
 		isCNIEnabled:         isCNIEnabled,
 		roleBindingsList:     rbacv1.RoleBindingList{},
@@ -697,6 +697,9 @@ func (r *namespaceReconciler) reconcileRoleBindings(namespace string, reqLogger 
 			reqLogger.Info("creating RoleBinding for mesh ServiceAccount", "RoleBinding", roleBindingName)
 			roleBinding := meshRoleBinding.DeepCopy()
 			roleBinding.SetNamespace(namespace)
+			roleBinding.ResourceVersion = ""
+			roleBinding.SelfLink = ""
+			roleBinding.Generation = 0
 			common.SetLabel(roleBinding, common.MemberOfKey, r.meshNamespace)
 			err = r.Client.Create(context.TODO(), roleBinding)
 			if err == nil {
