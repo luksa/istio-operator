@@ -100,8 +100,7 @@ func (p *ManifestProcessor) processObject(obj runtime.Object, component string) 
 	key := v1.NewResourceKey(objMeta, objType)
 	p.Log = origLogger.WithValues("Resource", key)
 
-	_, err = meta.ListAccessor(obj)
-	if err == nil {
+	if objType.GetKind() == "List" {
 		// it's a list
 		items, err := meta.ExtractList(obj)
 		if err != nil {
