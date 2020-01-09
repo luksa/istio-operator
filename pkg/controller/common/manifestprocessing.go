@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/ghodss/yaml"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -64,9 +65,13 @@ func (p *ManifestProcessor) ProcessManifests(manifests []manifest.Manifest, comp
 			}
 			obj, err := runtime.Decode(p.JSONSerializer, rawJSON)
 			if err != nil {
-				p.Log.Error(err, "unable to decode object into Unstructured")
-				allErrors = append(allErrors, err)
-				continue
+				obj = &unstructured.Unstructured{}
+				_, _, err = unstructured.UnstructuredJSONScheme.Decode(rawJSON, nil, obj)
+				if err != nil {
+					p.Log.Error(err, "unable to decode object into Unstructured")
+					allErrors = append(allErrors, err)
+					continue
+				}
 			}
 			err = p.processObject(obj, component)
 			if err != nil {
