@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,8 +26,8 @@ import (
 // FakeManager is a manager that can be used for testing
 type FakeManager struct {
 	manager.Manager
-	recorderProvider recorder.Provider
-	reconcileWG      sync.WaitGroup
+	recorderProvider     recorder.Provider
+	activeReconcileCount ActiveReconciliationCounter
 }
 
 var _ manager.Manager = (*FakeManager)(nil)
@@ -68,7 +69,6 @@ func NewManager(scheme *runtime.Scheme, tracker clienttesting.ObjectTracker, gro
 	return &FakeManager{
 		Manager:          delegate,
 		recorderProvider: NewRecorderProvider(scheme),
-		reconcileWG:      sync.WaitGroup{},
 	}, nil
 }
 
@@ -87,7 +87,7 @@ func (m *FakeManager) Add(runnable manager.Runnable) error {
 		value := reflect.ValueOf(controller)
 		doValue := value.Elem().FieldByName("Do")
 		if reconciler, ok := doValue.Elem().Interface().(reconcile.Reconciler); ok {
-			reconciler = &trackingReconciler{Reconciler: reconciler, wg: &m.reconcileWG}
+			reconciler = &trackingReconciler{Reconciler: reconciler, activeReconcileCount: &m.activeReconcileCount}
 			doValue.Set(reflect.ValueOf(reconciler))
 		}
 	}
@@ -102,19 +102,19 @@ func (m *FakeManager) Add(runnable manager.Runnable) error {
 // have settled to an idle state.  There is a danger that controllers could
 // bounce events back and forth, causing this call to effectively hang.
 func (m *FakeManager) WaitForReconcileCompletion() {
-	m.reconcileWG.Wait()
+	m.activeReconcileCount.WaitUntilZero()
 }
 
 type trackingReconciler struct {
 	reconcile.Reconciler
-	wg *sync.WaitGroup
+	activeReconcileCount *ActiveReconciliationCounter
 }
 
 func (r *trackingReconciler) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	// XXX: should we introduce a condition variable that prevents entering a
 	// a new reconcile once a caller has begun waiting for completion?
-	r.wg.Add(1)
-	defer r.wg.Done()
+	r.activeReconcileCount.Increase()
+	defer r.activeReconcileCount.Decrease()
 	return r.Reconciler.Reconcile(request)
 }
 
@@ -286,4 +286,36 @@ func specChanged(new, old runtime.Object) (changed bool) {
 		}
 	}()
 	return
+}
+
+type ActiveReconciliationCounter struct {
+	count uint32
+	mu    sync.RWMutex
+}
+
+func (a *ActiveReconciliationCounter) Increase() {
+	a.mu.Lock()
+	a.count++
+	a.mu.Unlock()
+}
+
+func (a *ActiveReconciliationCounter) Decrease() {
+	a.mu.Lock()
+	a.count--
+	a.mu.Unlock()
+}
+
+func (a *ActiveReconciliationCounter) WaitUntilZero() {
+	for {
+		a.mu.RLock()
+		isZero := a.count == 0
+		a.mu.RUnlock()
+
+		if isZero {
+			return
+		}
+		// a simple sleep instead of actual signalling should be fine, since
+		// we're only using this in tests
+		time.Sleep(10 * time.Millisecond)
+	}
 }
